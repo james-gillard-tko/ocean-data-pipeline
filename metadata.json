@@ -1,0 +1,13 @@
+{
+  "dataset": "NOAA National Buoy Data Center",
+  "source": "https://www.ndbc.noaa.gov/",
+  "collected_on": "2025-05-15",
+  "variables": ["wave_height", "air_temp", "wind_speed"],
+  "unit_notes": {
+    "wave_height": "meters",
+    "air_temp": "Celsius",
+    "wind_speed": "meters/second"
+  },
+  "spatial_coverage": "North Atlantic",
+  "temporal_coverage": "Last 30 days"
+}

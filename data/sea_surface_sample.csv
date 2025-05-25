@@ -1,0 +1,3 @@
+time,depth,latitude,longitude,Temperature,Salinity
+UTC,m,degrees_north,degrees_east,degree_C,PSU
+1960-01-16T00:00:00Z,0.0,32.5,-70.0,21.36956,36.396088
