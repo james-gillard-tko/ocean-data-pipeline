@@ -2,7 +2,7 @@ import requests
 import pandas as pd
 from pathlib import Path
 
-print("🚀 Starting extract.py...")
+print("Starting extract.py...")
 
 # Constants
 # Dataset used is SeaDataNet North Atlantic Climatology (1955-2015) accessed via the Ifremer ERDDAP server

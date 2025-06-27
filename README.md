@@ -1,28 +1,28 @@
-# Ocean Data Pipeline – Sensor Data Aquisition to Streamlit Viz
+# Ocean Data Pipeline - Sensor Data Aquisition to Streamlit Viz
 
-This project demonstrates a simple, real-world data engineering pipeline built with Python to ingest, clean, store, and visualize marine sensor data (e.g. from NOAA, EMODnet). Designed to support marine research and monitoring.
+This project demonstrates a simple, real-world data engineering pipeline built with Python to ingest, clean, store, and visualize marine sensor data (e.g. from NOAA, EMODnet). Designed to support research and monitoring.
 
-## 🚀 Features
+## Features
 - Pulls real-time or historical oceanographic data via API
 - Cleans and standardizes the dataset (timestamp, units, missing values)
 - Stores processed data in SQLite
 - Displays interactive visualizations in a Streamlit dashboard
 
-## 📦 Tech Stack
+## Tech Stack
 - Python, Pandas, Requests
-- SQLite (or DuckDB)
+- DuckDB
 - Streamlit
 - Git + GitHub for version control
 
-## 📝 License
+## License
 
 This project is licensed under the MIT License – see the [LICENSE] file for details.
 
-## 📊 Example Dashboard
+## Example Dashboard
 
 *(Include screenshot once built)*
 
-## 🛠️ How to Run
+## How to Run
 
 ```bash
 # Clone and enter
