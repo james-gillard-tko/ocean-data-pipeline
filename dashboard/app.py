@@ -8,18 +8,33 @@ from streamlit_folium import st_folium
 import duckdb
 from pathlib import Path
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import json
+import logging
+import sys
+
+# Add project root to path for imports
+sys.path.append(str(Path(__file__).parent.parent))
+
+# Import our new dynamic API components
+try:
+    from config import get_coverage_bounds, get_time_bounds, coordinate_converter
+    from cache_manager import cache_manager
+    from pipeline.extract import ERDDAPExtractor
+    DYNAMIC_API_AVAILABLE = True
+except ImportError:
+    DYNAMIC_API_AVAILABLE = False
+    st.error("⚠️ Dynamic API components not available. Please ensure Phase 1 is integrated.")
 
 # Page configuration
 st.set_page_config(
-    page_title="Ocean Data Dashboard",
+    page_title="Ocean Data Explorer",
     page_icon="🌊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
+# Custom CSS for enhanced styling
 st.markdown("""
 <style>
     .main-header {
@@ -38,19 +53,38 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
     
-    .data-quality-good {
+    .selection-box {
+        background: #f0f8ff;
+        border: 2px solid #4a90e2;
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    
+    .loading-container {
+        text-align: center;
+        padding: 2rem;
+        background: #f8f9fa;
+        border-radius: 10px;
+        margin: 1rem 0;
+    }
+    
+    .success-message {
         color: #2e7d32;
         font-weight: bold;
+        background: #e8f5e8;
+        padding: 0.5rem;
+        border-radius: 5px;
+        margin: 0.5rem 0;
     }
     
-    .data-quality-warning {
-        color: #f57f17;
-        font-weight: bold;
-    }
-    
-    .data-quality-error {
+    .error-message {
         color: #c62828;
         font-weight: bold;
+        background: #ffebee;
+        padding: 0.5rem;
+        border-radius: 5px;
+        margin: 0.5rem 0;
     }
     
     .sidebar-info {
@@ -59,31 +93,44 @@ st.markdown("""
         border-radius: 8px;
         margin: 1rem 0;
     }
+    
+    .coordinate-display {
+        background: #fff3cd;
+        border: 1px solid #ffeaa7;
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 1rem 0;
+        font-family: monospace;
+        font-size: 14px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
+# Initialize session state
+if 'selected_coordinates' not in st.session_state:
+    st.session_state.selected_coordinates = None
+if 'current_data' not in st.session_state:
+    st.session_state.current_data = None
+if 'data_metadata' not in st.session_state:
+    st.session_state.data_metadata = None
+if 'last_query' not in st.session_state:
+    st.session_state.last_query = None
+
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def load_data_from_db():
-    """Load data from DuckDB database with caching."""
+    """Load data from DuckDB database with caching (backwards compatibility)."""
     db_path = Path("data/ocean_data.duckdb")
     
     if not db_path.exists():
-        st.error("❌ Database not found! Please run the pipeline first: `python run_pipeline.py`")
-        st.stop()
+        return pd.DataFrame(), 0, []
     
     try:
         conn = duckdb.connect(str(db_path))
-        
-        # Get all data
         df = conn.execute("SELECT * FROM sea_surface ORDER BY time").df()
-        
-        # Get database metadata
         row_count = conn.execute("SELECT COUNT(*) FROM sea_surface").fetchone()[0]
         table_info = conn.execute("DESCRIBE sea_surface").fetchall()
-        
         conn.close()
         
-        # Convert time column to datetime if it's not already
         if 'time' in df.columns:
             df['time'] = pd.to_datetime(df['time'])
         
@@ -91,67 +138,128 @@ def load_data_from_db():
         
     except Exception as e:
         st.error(f"❌ Error loading data: {str(e)}")
-        st.stop()
+        return pd.DataFrame(), 0, []
 
-def create_map_visualization(df):
-    """Create an interactive map showing data collection points."""
-    if df.empty or 'latitude' not in df.columns or 'longitude' not in df.columns:
-        st.warning("⚠️ No geographic data available for mapping")
-        return None
+def create_interactive_map(coverage_bounds=None):
+    """Create an interactive map for location selection."""
+    
+    # Get dataset coverage bounds
+    if coverage_bounds is None and DYNAMIC_API_AVAILABLE:
+        coverage_bounds = get_coverage_bounds()
+    
+    # Default bounds if dynamic API not available
+    if coverage_bounds is None:
+        coverage_bounds = {
+            'north': 70.0, 'south': 20.0,
+            'east': 40.0, 'west': -80.0
+        }
     
     # Calculate map center
-    center_lat = df['latitude'].mean()
-    center_lon = df['longitude'].mean()
+    center_lat = (coverage_bounds['north'] + coverage_bounds['south']) / 2
+    center_lon = (coverage_bounds['east'] + coverage_bounds['west']) / 2
     
     # Create folium map
     m = folium.Map(
         location=[center_lat, center_lon],
-        zoom_start=4,
+        zoom_start=3,
         tiles='OpenStreetMap'
     )
     
-    # Add data points
-    for idx, row in df.iterrows():
-        # Create popup content
-        popup_content = f"""
-        <div style="width: 200px;">
-            <h4>🌊 Ocean Data Point</h4>
-            <b>📍 Location:</b> {row['latitude']:.2f}°N, {row['longitude']:.2f}°W<br>
-            <b>🌡️ Temperature:</b> {row['temperature']:.2f}°C<br>
-            <b>🧂 Salinity:</b> {row['salinity']:.2f} PSU<br>
-            <b>📏 Depth:</b> {row['depth']:.1f}m<br>
-            <b>📅 Time:</b> {row['time'].strftime('%Y-%m-%d') if pd.notna(row['time']) else 'N/A'}
-        </div>
-        """
-        
-        # Color code by temperature
-        if pd.notna(row['temperature']):
-            temp = row['temperature']
-            if temp < 15:
-                color = 'blue'
-            elif temp < 25:
-                color = 'green'
-            else:
-                color = 'red'
-        else:
-            color = 'gray'
-        
-        folium.CircleMarker(
-            location=[row['latitude'], row['longitude']],
-            radius=8,
-            popup=folium.Popup(popup_content, max_width=250),
-            color='black',
-            weight=1,
-            fillColor=color,
-            fillOpacity=0.7,
-            tooltip=f"Temp: {row['temperature']:.1f}°C | Salinity: {row['salinity']:.1f} PSU"
+    # Add dataset coverage rectangle
+    folium.Rectangle(
+        bounds=[
+            [coverage_bounds['south'], coverage_bounds['west']],
+            [coverage_bounds['north'], coverage_bounds['east']]
+        ],
+        color='blue',
+        fill=True,
+        fillColor='lightblue',
+        fillOpacity=0.2,
+        weight=2,
+        popup="Dataset Coverage Area<br>Click inside to select location"
+    ).add_to(m)
+    
+    # Add current selection marker if exists
+    if st.session_state.selected_coordinates:
+        lat, lon = st.session_state.selected_coordinates
+        folium.Marker(
+            location=[lat, lon],
+            popup=f"Selected: {lat:.3f}°N, {lon:.3f}°W",
+            icon=folium.Icon(color='red', icon='info-sign')
         ).add_to(m)
     
-    # Don't add legend to map - will be displayed separately
+    # Add grid lines for reference
+    for lat in range(int(coverage_bounds['south']), int(coverage_bounds['north']) + 1, 10):
+        folium.PolyLine(
+            locations=[[lat, coverage_bounds['west']], [lat, coverage_bounds['east']]],
+            color='gray',
+            weight=1,
+            opacity=0.5
+        ).add_to(m)
+    
+    for lon in range(int(coverage_bounds['west']), int(coverage_bounds['east']) + 1, 10):
+        folium.PolyLine(
+            locations=[[coverage_bounds['south'], lon], [coverage_bounds['north'], lon]],
+            color='gray',
+            weight=1,
+            opacity=0.5
+        ).add_to(m)
+    
     return m
 
-def create_time_series_plots(df):
-    """Create time series plots for temperature and salinity."""
+def process_map_click(map_data):
+    """Process map click events and extract coordinates."""
+    if map_data['last_object_clicked_popup']:
+        # Skip if clicked on popup
+        return None
+    
+    if map_data['last_clicked']:
+        lat = map_data['last_clicked']['lat']
+        lon = map_data['last_clicked']['lng']
+        
+        # Validate coordinates are within dataset bounds
+        if DYNAMIC_API_AVAILABLE:
+            is_valid, message = coordinate_converter.validate_coordinates(lat, lon)
+            if not is_valid:
+                st.error(f"❌ {message}")
+                return None
+        
+        return (lat, lon)
+    
+    return None
+
+def fetch_ocean_data(latitude, longitude, start_date, end_date):
+    """Fetch ocean data for selected coordinates and date range."""
+    
+    if not DYNAMIC_API_AVAILABLE:
+        st.error("❌ Dynamic API not available. Please integrate Phase 1 components.")
+        return None, None
+    
+    try:
+        # Create extractor instance
+        extractor = ERDDAPExtractor()
+        
+        # Convert dates to strings
+        start_str = start_date.strftime("%Y-%m-%d")
+        end_str = end_date.strftime("%Y-%m-%d")
+        
+        # Fetch data
+        with st.spinner("🌊 Fetching ocean data from ERDDAP..."):
+            df, metadata = extractor.fetch_data_for_location(
+                latitude=latitude,
+                longitude=longitude,
+                start_date=start_str,
+                end_date=end_str
+            )
+        
+        return df, metadata
+        
+    except Exception as e:
+        st.error(f"❌ Failed to fetch data: {str(e)}")
+        return None, None
+
+def create_enhanced_time_series_plots(df, metadata=None):
+    """Create enhanced time series plots with more detailed information."""
     if df.empty or 'time' not in df.columns:
         st.warning("⚠️ No time series data available")
         return None
@@ -159,44 +267,87 @@ def create_time_series_plots(df):
     # Create subplot with secondary y-axis
     fig = make_subplots(
         rows=2, cols=1,
-        subplot_titles=('🌡️ Sea Surface Temperature Over Time', '🧂 Sea Surface Salinity Over Time'),
+        subplot_titles=(
+            f'🌡️ Sea Surface Temperature Over Time ({len(df)} data points)',
+            f'🧂 Sea Surface Salinity Over Time ({len(df)} data points)'
+        ),
         vertical_spacing=0.1,
         specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
     )
     
     # Temperature plot
     if 'temperature' in df.columns and df['temperature'].notna().any():
+        temp_data = df.dropna(subset=['temperature'])
+        
         fig.add_trace(
             go.Scatter(
-                x=df['time'],
-                y=df['temperature'],
+                x=temp_data['time'],
+                y=temp_data['temperature'],
                 mode='lines+markers',
                 name='Temperature',
                 line=dict(color='#ff6b6b', width=3),
                 marker=dict(size=8, color='#ff6b6b'),
-                hovertemplate='<b>%{fullData.name}</b><br>Date: %{x}<br>Temperature: %{y:.2f}°C<extra></extra>'
+                hovertemplate='<b>Temperature</b><br>Date: %{x}<br>Value: %{y:.2f}°C<extra></extra>'
             ),
             row=1, col=1
         )
+        
+        # Add trend line if enough data
+        if len(temp_data) > 2:
+            z = np.polyfit(range(len(temp_data)), temp_data['temperature'], 1)
+            trend_line = np.poly1d(z)(range(len(temp_data)))
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=temp_data['time'],
+                    y=trend_line,
+                    mode='lines',
+                    name='Temperature Trend',
+                    line=dict(color='#ff6b6b', width=2, dash='dash'),
+                    opacity=0.7,
+                    hovertemplate='<b>Temperature Trend</b><br>Date: %{x}<br>Value: %{y:.2f}°C<extra></extra>'
+                ),
+                row=1, col=1
+            )
     
     # Salinity plot
     if 'salinity' in df.columns and df['salinity'].notna().any():
+        sal_data = df.dropna(subset=['salinity'])
+        
         fig.add_trace(
             go.Scatter(
-                x=df['time'],
-                y=df['salinity'],
+                x=sal_data['time'],
+                y=sal_data['salinity'],
                 mode='lines+markers',
                 name='Salinity',
                 line=dict(color='#4ecdc4', width=3),
                 marker=dict(size=8, color='#4ecdc4'),
-                hovertemplate='<b>%{fullData.name}</b><br>Date: %{x}<br>Salinity: %{y:.2f} PSU<extra></extra>'
+                hovertemplate='<b>Salinity</b><br>Date: %{x}<br>Value: %{y:.2f} PSU<extra></extra>'
             ),
             row=2, col=1
         )
+        
+        # Add trend line if enough data
+        if len(sal_data) > 2:
+            z = np.polyfit(range(len(sal_data)), sal_data['salinity'], 1)
+            trend_line = np.poly1d(z)(range(len(sal_data)))
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=sal_data['time'],
+                    y=trend_line,
+                    mode='lines',
+                    name='Salinity Trend',
+                    line=dict(color='#4ecdc4', width=2, dash='dash'),
+                    opacity=0.7,
+                    hovertemplate='<b>Salinity Trend</b><br>Date: %{x}<br>Value: %{y:.2f} PSU<extra></extra>'
+                ),
+                row=2, col=1
+            )
     
     # Update layout
     fig.update_layout(
-        height=600,
+        height=700,
         showlegend=True,
         title_text="📈 Ocean Data Time Series Analysis",
         title_x=0.5,
@@ -213,33 +364,39 @@ def create_time_series_plots(df):
     
     return fig
 
-def create_data_quality_metrics(df, row_count, table_info):
-    """Create data quality metrics and statistics."""
+def create_data_summary_metrics(df, metadata=None):
+    """Create enhanced data summary metrics."""
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.markdown('<div class="metric-container">', unsafe_allow_html=True)
         st.metric(
-            label="📊 Total Records",
-            value=f"{row_count:,}",
-            help="Total number of data points in the database"
+            label="📊 Data Points",
+            value=f"{len(df):,}",
+            help="Number of time series data points retrieved"
         )
         st.markdown('</div>', unsafe_allow_html=True)
     
     with col2:
-        completeness = (df.notna().sum().sum() / (len(df) * len(df.columns)) * 100) if not df.empty else 0
-        st.markdown('<div class="metric-container">', unsafe_allow_html=True)
-        st.metric(
-            label="✅ Data Completeness",
-            value=f"{completeness:.1f}%",
-            help="Percentage of non-null values across all fields"
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
+        if metadata and 'data_source' in metadata:
+            data_source = metadata['data_source']
+            source_icon = "💾" if data_source == "cache" else "🌐"
+            st.markdown('<div class="metric-container">', unsafe_allow_html=True)
+            st.metric(
+                label=f"{source_icon} Data Source",
+                value=data_source.title(),
+                help="Whether data came from cache or API"
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="metric-container">', unsafe_allow_html=True)
+            st.metric(label="📡 Data Source", value="Database")
+            st.markdown('</div>', unsafe_allow_html=True)
     
     with col3:
-        if 'time' in df.columns and not df.empty:
-            time_span = (df['time'].max() - df['time'].min()).days if len(df) > 1 else 0
+        if not df.empty and 'time' in df.columns:
+            time_span = (df['time'].max() - df['time'].min()).days
             st.markdown('<div class="metric-container">', unsafe_allow_html=True)
             st.metric(
                 label="📅 Time Span",
@@ -253,304 +410,355 @@ def create_data_quality_metrics(df, row_count, table_info):
             st.markdown('</div>', unsafe_allow_html=True)
     
     with col4:
-        db_path = Path("data/ocean_data.duckdb")
-        db_size = db_path.stat().st_size / 1024 if db_path.exists() else 0
-        st.markdown('<div class="metric-container">', unsafe_allow_html=True)
-        st.metric(
-            label="💾 Database Size",
-            value=f"{db_size:.1f} KB",
-            help="Size of the DuckDB database file"
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
+        if metadata and 'quality_score' in metadata:
+            quality_score = metadata['quality_score']
+            quality_color = "🟢" if quality_score > 0.8 else "🟡" if quality_score > 0.5 else "🔴"
+            st.markdown('<div class="metric-container">', unsafe_allow_html=True)
+            st.metric(
+                label=f"{quality_color} Quality Score",
+                value=f"{quality_score:.1%}",
+                help="Data quality based on completeness and value ranges"
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            completeness = (df.notna().sum().sum() / (len(df) * len(df.columns)) * 100) if not df.empty else 0
+            st.markdown('<div class="metric-container">', unsafe_allow_html=True)
+            st.metric(
+                label="✅ Completeness",
+                value=f"{completeness:.1f}%",
+                help="Percentage of non-null values"
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
 
-def create_statistical_summary(df):
-    """Create statistical summary of the data."""
-    if df.empty:
-        st.warning("⚠️ No data available for statistical analysis")
+def create_location_selector():
+    """Create the enhanced location selection interface."""
+    
+    st.subheader("🗺️ Select Ocean Location")
+    
+    # Create columns for map and controls
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        # Create and display interactive map
+        if DYNAMIC_API_AVAILABLE:
+            coverage_bounds = get_coverage_bounds()
+            ocean_map = create_interactive_map(coverage_bounds)
+        else:
+            ocean_map = create_interactive_map()
+        
+        map_data = st_folium(
+            ocean_map, 
+            width=700, 
+            height=400,
+            returned_objects=['last_clicked']
+        )
+        
+        # Process map clicks
+        clicked_coords = process_map_click(map_data)
+        if clicked_coords:
+            st.session_state.selected_coordinates = clicked_coords
+            st.rerun()
+    
+    with col2:
+        st.markdown("### 🎯 Selection Controls")
+        
+        # Display current selection
+        if st.session_state.selected_coordinates:
+            lat, lon = st.session_state.selected_coordinates
+            st.markdown(f'<div class="coordinate-display">', unsafe_allow_html=True)
+            st.markdown(f"**Selected Location:**<br>")
+            st.markdown(f"Latitude: {lat:.3f}°N<br>")
+            st.markdown(f"Longitude: {lon:.3f}°W")
+            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.info("👆 Click on the map to select a location")
+        
+        # Manual coordinate entry
+        st.markdown("**Or enter coordinates manually:**")
+        manual_lat = st.number_input(
+            "Latitude (°N)", 
+            min_value=20.0, 
+            max_value=80.0, 
+            value=40.0, 
+            step=0.1,
+            help="Latitude in decimal degrees (20°N - 80°N)"
+        )
+        manual_lon = st.number_input(
+            "Longitude (°W)", 
+            min_value=-80.0, 
+            max_value=40.0, 
+            value=-30.0, 
+            step=0.1,
+            help="Longitude in decimal degrees (80°W - 40°E)"
+        )
+        
+        if st.button("📍 Use Manual Coordinates"):
+            st.session_state.selected_coordinates = (manual_lat, manual_lon)
+            st.rerun()
+        
+        # Clear selection
+        if st.button("🗑️ Clear Selection"):
+            st.session_state.selected_coordinates = None
+            st.session_state.current_data = None
+            st.session_state.data_metadata = None
+            st.rerun()
+
+def create_date_range_selector():
+    """Create date range selection interface."""
+    
+    st.subheader("📅 Select Date Range")
+    
+    # Get available date range
+    if DYNAMIC_API_AVAILABLE:
+        time_bounds = get_time_bounds()
+        min_date = datetime.strptime(time_bounds['start'], "%Y-%m-%d").date()
+        max_date = datetime.strptime(time_bounds['end'], "%Y-%m-%d").date()
+    else:
+        min_date = date(1955, 1, 1)
+        max_date = date(2015, 12, 31)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        start_date = st.date_input(
+            "Start Date",
+            value=date(1980, 1, 1),
+            min_value=min_date,
+            max_value=max_date,
+            help=f"Select start date ({min_date} to {max_date})"
+        )
+    
+    with col2:
+        end_date = st.date_input(
+            "End Date",
+            value=date(1985, 12, 31),
+            min_value=min_date,
+            max_value=max_date,
+            help=f"Select end date ({min_date} to {max_date})"
+        )
+    
+    # Validate date range
+    if start_date > end_date:
+        st.error("❌ Start date must be before end date")
+        return None, None
+    
+    # Check if date range is reasonable
+    days_diff = (end_date - start_date).days
+    if days_diff > 3653:  # ~10 years
+        st.warning(f"⚠️ Large date range ({days_diff} days). This may take longer to load.")
+    
+    return start_date, end_date
+
+def create_data_fetch_interface():
+    """Create the data fetching interface."""
+    
+    st.subheader("🚀 Fetch Ocean Data")
+    
+    # Check if we have valid selections
+    if not st.session_state.selected_coordinates:
+        st.warning("⚠️ Please select a location on the map first")
         return
     
-    st.subheader("📊 Statistical Summary")
+    # Get date range
+    start_date, end_date = create_date_range_selector()
     
-    # Numeric columns only
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    if start_date is None or end_date is None:
+        return
     
-    if len(numeric_cols) > 0:
-        # Create summary statistics
-        summary_stats = df[numeric_cols].describe()
-        
-        # Display as a formatted table
-        st.dataframe(
-            summary_stats.round(3),
-            use_container_width=True
-        )
-        
-        # Create distribution plots for key variables
-        if len(numeric_cols) >= 2:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if 'temperature' in df.columns:
-                    fig_temp = px.histogram(
-                        df, 
-                        x='temperature',
-                        title='🌡️ Temperature Distribution',
-                        nbins=20,
-                        color_discrete_sequence=['#ff6b6b']
-                    )
-                    fig_temp.update_layout(height=300)
-                    st.plotly_chart(fig_temp, use_container_width=True)
-            
-            with col2:
-                if 'salinity' in df.columns:
-                    fig_sal = px.histogram(
-                        df, 
-                        x='salinity',
-                        title='🧂 Salinity Distribution',
-                        nbins=20,
-                        color_discrete_sequence=['#4ecdc4']
-                    )
-                    fig_sal.update_layout(height=300)
-                    st.plotly_chart(fig_sal, use_container_width=True)
-
-def create_real_time_query_interface(df):
-    """Create an interface for real-time database queries."""
-    st.subheader("🔍 Real-time Data Explorer")
+    # Display current selections
+    lat, lon = st.session_state.selected_coordinates
+    st.markdown('<div class="selection-box">', unsafe_allow_html=True)
+    st.markdown(f"**📍 Location:** {lat:.3f}°N, {lon:.3f}°W")
+    st.markdown(f"**📅 Date Range:** {start_date} to {end_date}")
+    st.markdown(f"**📊 Expected Duration:** {(end_date - start_date).days} days")
+    st.markdown('</div>', unsafe_allow_html=True)
     
-    with st.expander("📋 Custom Database Query", expanded=False):
-        st.write("Execute custom SQL queries on the ocean data:")
+    # Fetch data button
+    if st.button("🌊 Fetch Ocean Data", type="primary"):
         
-        # Predefined queries
-        predefined_queries = {
-            "All Data": "SELECT * FROM sea_surface ORDER BY time",
-            "Temperature > 20°C": "SELECT * FROM sea_surface WHERE temperature > 20 ORDER BY temperature DESC",
-            "High Salinity": "SELECT * FROM sea_surface WHERE salinity > 35 ORDER BY salinity DESC",
-            "Data Summary": "SELECT COUNT(*) as total_records, AVG(temperature) as avg_temp, AVG(salinity) as avg_salinity FROM sea_surface"
-        }
+        # Check if this is the same query as last time
+        current_query = (lat, lon, start_date, end_date)
+        if st.session_state.last_query == current_query and st.session_state.current_data is not None:
+            st.success("✅ Using cached data from previous query")
+            return
         
-        query_choice = st.selectbox("Choose a predefined query:", list(predefined_queries.keys()))
+        # Fetch new data
+        df, metadata = fetch_ocean_data(lat, lon, start_date, end_date)
         
-        if st.button("🚀 Execute Query"):
-            try:
-                db_path = Path("data/ocean_data.duckdb")
-                conn = duckdb.connect(str(db_path))
-                
-                result = conn.execute(predefined_queries[query_choice]).df()
-                conn.close()
-                
-                st.success(f"✅ Query executed successfully! Found {len(result)} results.")
-                st.dataframe(result, use_container_width=True)
-                
-            except Exception as e:
-                st.error(f"❌ Query failed: {str(e)}")
-    
-    # Data filtering interface
-    with st.expander("🎛️ Interactive Data Filters", expanded=True):
-        if not df.empty:
-            col1, col2 = st.columns(2)
+        if df is not None:
+            # Store in session state
+            st.session_state.current_data = df
+            st.session_state.data_metadata = metadata
+            st.session_state.last_query = current_query
             
-            with col1:
-                if 'temperature' in df.columns and df['temperature'].notna().any():
-                    temp_min = float(df['temperature'].min())
-                    temp_max = float(df['temperature'].max())
-                    
-                    # Handle case where min == max (single data point)
-                    if temp_min == temp_max:
-                        st.info(f"🌡️ Temperature: {temp_min:.2f}°C (single value)")
-                        temp_range = (temp_min, temp_max)
-                    else:
-                        temp_range = st.slider(
-                            "🌡️ Temperature Range (°C)",
-                            temp_min,
-                            temp_max,
-                            (temp_min, temp_max),
-                            step=0.1
-                        )
-                else:
-                    st.warning("⚠️ No temperature data available")
-                    temp_range = None
-                
-            with col2:
-                if 'salinity' in df.columns and df['salinity'].notna().any():
-                    sal_min = float(df['salinity'].min())
-                    sal_max = float(df['salinity'].max())
-                    
-                    # Handle case where min == max (single data point)
-                    if sal_min == sal_max:
-                        st.info(f"🧂 Salinity: {sal_min:.2f} PSU (single value)")
-                        sal_range = (sal_min, sal_max)
-                    else:
-                        sal_range = st.slider(
-                            "🧂 Salinity Range (PSU)",
-                            sal_min,
-                            sal_max,
-                            (sal_min, sal_max),
-                            step=0.1
-                        )
-                else:
-                    st.warning("⚠️ No salinity data available")
-                    sal_range = None
+            # Show success message
+            data_source = metadata.get('data_source', 'unknown')
+            cache_icon = "💾" if data_source == "cache" else "🌐"
+            st.markdown(f'<div class="success-message">', unsafe_allow_html=True)
+            st.markdown(f"✅ Successfully fetched {len(df)} data points from {data_source} {cache_icon}")
+            st.markdown('</div>', unsafe_allow_html=True)
             
-            # Apply filters
-            filtered_df = df.copy()
-            if 'temperature' in df.columns and temp_range is not None:
-                filtered_df = filtered_df[
-                    (filtered_df['temperature'] >= temp_range[0]) & 
-                    (filtered_df['temperature'] <= temp_range[1])
-                ]
-            if 'salinity' in df.columns and sal_range is not None:
-                filtered_df = filtered_df[
-                    (filtered_df['salinity'] >= sal_range[0]) & 
-                    (filtered_df['salinity'] <= sal_range[1])
-                ]
+            # Show data quality info
+            if 'quality_score' in metadata:
+                quality_score = metadata['quality_score']
+                if quality_score < 0.5:
+                    st.warning(f"⚠️ Data quality is low ({quality_score:.1%}). Some values may be missing or unreliable.")
             
-            st.write(f"📊 Filtered Results: {len(filtered_df)} of {len(df)} records")
-            if not filtered_df.empty:
-                st.dataframe(filtered_df, use_container_width=True)
+            # Trigger rerun to update visualizations
+            st.rerun()
 
 def main():
     """Main dashboard application."""
     
     # Header
-    st.markdown('<h1 class="main-header">🌊 Ocean Data Dashboard</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🌊 Ocean Data Explorer</h1>', unsafe_allow_html=True)
     
     # Sidebar
     with st.sidebar:
         st.markdown('<div class="sidebar-info">', unsafe_allow_html=True)
-        st.markdown("### 📊 Dashboard Info")
+        st.markdown("### 🎯 Interactive Explorer")
         st.markdown("""
-        This dashboard visualizes oceanographic data collected from the **ERDDAP** database.
-        
-        **Features:**
-        - 🗺️ Interactive geographic maps
-        - 📈 Time series analysis
-        - 📊 Data quality metrics
-        - 🔍 Real-time queries
+        **NEW: Dynamic Data Fetching**
+        - 🗺️ Click anywhere on the map
+        - 📅 Select any date range (1955-2015)
+        - 🌊 Get real-time ocean data
+        - 💾 Smart caching for performance
         """)
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # Refresh button
-        if st.button("🔄 Refresh Data", help="Reload data from database"):
-            st.cache_data.clear()
-            st.rerun()
+        # Show cache statistics if available
+        if DYNAMIC_API_AVAILABLE:
+            cache_stats = cache_manager.get_cache_stats()
+            st.markdown("### 💾 Cache Status")
+            st.metric("Active Queries", cache_stats['active_entries'])
+            st.metric("Cache Size", f"{cache_stats['total_size_mb']:.1f} MB")
+            
+            if st.button("🧹 Clear Cache"):
+                cache_manager.clear_cache()
+                st.success("Cache cleared!")
+                st.rerun()
         
         # Data source info
         st.markdown("---")
         st.markdown("### 📡 Data Source")
         st.markdown("""
         **Dataset:** SeaDataNet North Atlantic Climatology  
-        **Source:** Ifremer ERDDAP Server  
-        **Variables:** Temperature, Salinity, Location, Time  
-        **Update:** Real-time from pipeline
+        **Coverage:** 20°N-80°N, 80°W-40°E  
+        **Period:** 1955-2015  
+        **Resolution:** 0.25° grid, monthly  
+        **Variables:** Temperature, Salinity
         """)
+        
+        # Refresh button
+        if st.button("🔄 Refresh Dashboard"):
+            st.cache_data.clear()
+            st.rerun()
     
-    # Load data
-    with st.spinner("🔄 Loading ocean data..."):
-        df, row_count, table_info = load_data_from_db()
-    
-    if df.empty:
-        st.warning("⚠️ No data found in database. Please run the pipeline to collect data.")
-        st.code("python run_pipeline.py")
-        return
-    
-    # Main dashboard tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Geographic View", "📈 Time Series", "📊 Data Quality", "🔍 Data Explorer"])
+    # Main content tabs
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🗺️ Location Selection", 
+        "📈 Time Series Analysis", 
+        "📊 Data Summary", 
+        "🔍 Legacy Data Explorer"
+    ])
     
     with tab1:
-        st.header("🗺️ Geographic Distribution of Ocean Data")
+        st.header("🗺️ Interactive Location Selection")
         
-        # Create and display map
-        ocean_map = create_map_visualization(df)
-        if ocean_map:
-            col1, col2 = st.columns([3, 1])
-            
-            with col1:
-                map_data = st_folium(ocean_map, width=700, height=500)
-            
-            with col2:
-                st.markdown("### 🌡️ Temperature Scale")
-                st.markdown("""
-                <div style="background: white; padding: 15px; border-radius: 8px; border: 2px solid #ddd;">
-                    <div style="margin-bottom: 8px;">
-                        <span style="color: blue; font-size: 16px;">●</span> 
-                        <span style="font-size: 14px;">Cold (&lt;15°C)</span>
-                    </div>
-                    <div style="margin-bottom: 8px;">
-                        <span style="color: green; font-size: 16px;">●</span> 
-                        <span style="font-size: 14px;">Moderate (15-25°C)</span>
-                    </div>
-                    <div style="margin-bottom: 8px;">
-                        <span style="color: red; font-size: 16px;">●</span> 
-                        <span style="font-size: 14px;">Warm (&gt;25°C)</span>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+        # Location selector
+        create_location_selector()
         
-        # Display data summary below map
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("📍 Location Summary")
-            if 'latitude' in df.columns and 'longitude' in df.columns:
-                st.write(f"**Latitude Range:** {df['latitude'].min():.2f}° to {df['latitude'].max():.2f}°")
-                st.write(f"**Longitude Range:** {df['longitude'].min():.2f}° to {df['longitude'].max():.2f}°")
-                st.write(f"**Data Points:** {len(df)} locations")
+        # Data fetch interface
+        create_data_fetch_interface()
         
-        with col2:
-            st.subheader("🌡️ Temperature Summary")
-            if 'temperature' in df.columns:
-                st.write(f"**Average:** {df['temperature'].mean():.2f}°C")
-                st.write(f"**Range:** {df['temperature'].min():.2f}°C to {df['temperature'].max():.2f}°C")
-                st.write(f"**Standard Deviation:** {df['temperature'].std():.2f}°C")
+        # Show current data summary if available
+        if st.session_state.current_data is not None:
+            st.markdown("---")
+            st.subheader("📊 Current Data Summary")
+            create_data_summary_metrics(
+                st.session_state.current_data, 
+                st.session_state.data_metadata
+            )
     
     with tab2:
         st.header("📈 Time Series Analysis")
         
-        # Create and display time series plots
-        time_series_fig = create_time_series_plots(df)
-        if time_series_fig:
-            st.plotly_chart(time_series_fig, use_container_width=True)
-        
-        # Statistical summary
-        create_statistical_summary(df)
+        # Check if we have data
+        if st.session_state.current_data is not None and not st.session_state.current_data.empty:
+            # Create enhanced time series plots
+            fig = create_enhanced_time_series_plots(
+                st.session_state.current_data, 
+                st.session_state.data_metadata
+            )
+            
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Show data table
+            st.subheader("📋 Data Table")
+            st.dataframe(st.session_state.current_data, use_container_width=True)
+            
+            # Data export
+            if st.button("📥 Export Data as CSV"):
+                csv_data = st.session_state.current_data.to_csv(index=False)
+                st.download_button(
+                    label="Download CSV",
+                    data=csv_data,
+                    file_name=f"ocean_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+        else:
+            st.info("📍 Select a location and fetch data to see time series analysis")
     
     with tab3:
-        st.header("📊 Data Quality & Metrics")
+        st.header("📊 Data Summary & Quality")
         
-        # Data quality metrics
-        create_data_quality_metrics(df, row_count, table_info)
-        
-        # Data completeness analysis
-        st.subheader("🔍 Data Completeness Analysis")
-        if not df.empty:
-            # Calculate completeness by column
-            completeness_by_col = (df.notna().sum() / len(df) * 100).round(1)
-            
-            fig_completeness = px.bar(
-                x=completeness_by_col.index,
-                y=completeness_by_col.values,
-                title="📊 Data Completeness by Column",
-                labels={'x': 'Column', 'y': 'Completeness (%)'},
-                color=completeness_by_col.values,
-                color_continuous_scale='RdYlGn'
+        if st.session_state.current_data is not None and not st.session_state.current_data.empty:
+            # Summary metrics
+            create_data_summary_metrics(
+                st.session_state.current_data, 
+                st.session_state.data_metadata
             )
-            fig_completeness.update_layout(height=400, showlegend=False)
-            st.plotly_chart(fig_completeness, use_container_width=True)
-        
-        # Database schema info
-        st.subheader("🗄️ Database Schema")
-        schema_df = pd.DataFrame(table_info, columns=['Column', 'Type', 'Null', 'Key', 'Default', 'Extra'])
-        st.dataframe(schema_df, use_container_width=True)
+            
+            # Statistical summary
+            st.subheader("📈 Statistical Summary")
+            numeric_cols = st.session_state.current_data.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                summary_stats = st.session_state.current_data[numeric_cols].describe()
+                st.dataframe(summary_stats.round(3), use_container_width=True)
+            
+            # Quality information
+            if st.session_state.data_metadata and 'quality_issues' in st.session_state.data_metadata:
+                st.subheader("🔍 Data Quality Assessment")
+                issues = st.session_state.data_metadata['quality_issues']
+                if issues:
+                    for issue in issues:
+                        st.warning(f"⚠️ {issue}")
+                else:
+                    st.success("✅ No data quality issues detected")
+            
+        else:
+            st.info("📍 Select a location and fetch data to see summary statistics")
     
     with tab4:
-        st.header("🔍 Interactive Data Explorer")
-        create_real_time_query_interface(df)
-    
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        "**🌊 Ocean Data Pipeline Dashboard** | "
-        f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | "
-        f"Data points: {len(df)}"
-    )
-
-if __name__ == "__main__":
-    main()
+        st.header("🔍 Legacy Data Explorer")
+        st.info("This tab shows data from the original pipeline for comparison")
+        
+        # Load legacy data
+        df_legacy, row_count, table_info = load_data_from_db()
+        
+        if not df_legacy.empty:
+            st.subheader("📊 Legacy Data Summary")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Total Records", row_count)
+            with col2:
+                st.metric("Columns", len(df_legacy.columns))
+            with col3:
+                if 'time' in df_legacy.columns:
+                    time_span = (df_legacy['time'].max() - df_legacy['time'].min()).days
+                    st.metric("Time Span", f"{time_span} days")
+            
+            st.dataframe(df_legacy, use_container_width=True)
+        else:
