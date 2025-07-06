@@ -142,7 +142,7 @@ def create_interactive_map(coverage_bounds=None):
         tiles='OpenStreetMap'
     )
     
-    # Add dataset coverage rectangle
+    # Add dataset coverage rectangle (without popup to avoid click interference)
     folium.Rectangle(
         bounds=[
             [coverage_bounds['south'], coverage_bounds['west']],
@@ -151,9 +151,8 @@ def create_interactive_map(coverage_bounds=None):
         color='blue',
         fill=True,
         fillColor='lightblue',
-        fillOpacity=0.2,
-        weight=2,
-        popup="Dataset Coverage Area<br>Click inside to select location"
+        fillOpacity=0.1,
+        weight=1
     ).add_to(m)
     
     # Add current selection marker if exists
@@ -171,8 +170,9 @@ def process_map_click(map_data):
     """Process map click events and extract coordinates."""
     if not map_data or 'last_clicked' not in map_data:
         return None
-        
-    if map_data['last_clicked']:
+    
+    # Check if there was a click and it's not on a popup
+    if map_data['last_clicked'] and not map_data.get('last_object_clicked_popup'):
         lat = map_data['last_clicked']['lat']
         lon = map_data['last_clicked']['lng']
         
@@ -371,7 +371,7 @@ def create_location_selector():
             ocean_map, 
             width=700, 
             height=400,
-            returned_objects=['last_clicked']
+            returned_objects=['last_clicked', 'last_object_clicked_popup']
         )
         
         # Process map clicks
