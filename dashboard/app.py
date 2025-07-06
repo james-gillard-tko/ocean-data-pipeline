@@ -432,34 +432,34 @@ def create_date_range_selector():
     # Get available date range
     if DYNAMIC_API_AVAILABLE:
         try:
-            time_bounds = get_time_bounds()
-            min_date = datetime.strptime(time_bounds['start'], "%Y-%m-%d").date()
-            max_date = datetime.strptime(time_bounds['end'], "%Y-%m-%d").date()
+            # Use actual dataset bounds: 1955-1960
+            min_date = date(1955, 1, 1)
+            max_date = date(1960, 12, 31)
         except:
             min_date = date(1955, 1, 1)
-            max_date = date(2015, 12, 31)
+            max_date = date(1960, 12, 31)
     else:
         min_date = date(1955, 1, 1)
-        max_date = date(2015, 12, 31)
+        max_date = date(1960, 12, 31)
     
     col1, col2 = st.columns(2)
     
     with col1:
         start_date = st.date_input(
             "Start Date",
-            value=date(1980, 1, 1),
+            value=date(1955, 1, 1),
             min_value=min_date,
             max_value=max_date,
-            help=f"Select start date ({min_date} to {max_date})"
+            help=f"Select start date (1955-01-01 to 1960-12-31)"
         )
     
     with col2:
         end_date = st.date_input(
             "End Date",
-            value=date(1985, 12, 31),
+            value=date(1960, 12, 31),
             min_value=min_date,
             max_value=max_date,
-            help=f"Select end date ({min_date} to {max_date})"
+            help=f"Select end date (1955-01-01 to 1960-12-31)"
         )
     
     # Validate date range
@@ -469,8 +469,8 @@ def create_date_range_selector():
     
     # Check if date range is reasonable
     days_diff = (end_date - start_date).days
-    if days_diff > 3653:  # ~10 years
-        st.warning(f"⚠️ Large date range ({days_diff} days). This may take longer to load.")
+    if days_diff > 2190:  # ~6 years (full dataset)
+        st.warning(f"⚠️ Large date range ({days_diff} days). Dataset only covers 1955-1960.")
     
     return start_date, end_date
 
@@ -583,8 +583,8 @@ def main():
         st.markdown("### 📡 Data Source")
         st.markdown("""
         **Dataset:** SeaDataNet North Atlantic Climatology  
-        **Coverage:** 20°N-80°N, 80°W-40°E  
-        **Period:** 1955-2015  
+        **Coverage:** Limited region around 32.5°N, -70°W  
+        **Period:** 1955-1960 (6 years)  
         **Resolution:** 0.25° grid, monthly  
         **Variables:** Temperature, Salinity
         """)

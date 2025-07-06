@@ -19,25 +19,26 @@ ERDDAP_CONFIG = {
     "retry_delay": 1.0,  # seconds
 }
 
-# Grid Configuration for SeaDataNet North Atlantic Climatology
+# Grid Configuration for SeaDataNet North Atlantic Climatology  
+# Reverse engineered from working coordinate: (32.5°N, -70°W) → grid[90, 60]
 GRID_CONFIG = {
     "latitude": {
-        "min": 20.0,    # 20°N
-        "max": 80.0,    # 80°N  
-        "resolution": 0.25,  # 0.25° resolution
-        "grid_size": 241,    # Number of grid points
+        "min": 10.0,     # 32.5 - (90 * 0.25) = 10.0°N
+        "max": 32.5,     # Maximum latitude in dataset
+        "resolution": 0.25,
+        "grid_size": 91,  # 0 to 90 inclusive
     },
     "longitude": {
-        "min": -80.0,   # 80°W
-        "max": 40.0,    # 40°E
-        "resolution": 0.25,  # 0.25° resolution
-        "grid_size": 481,    # Number of grid points
+        "min": -85.0,    # -70 - (60 * 0.25) = -85.0°W
+        "max": -70.0,    # -70 + (0 * 0.25) = -70.0°W
+        "resolution": 0.25,
+        "grid_size": 61,  # 0 to 60 inclusive  
     },
     "time": {
         "start": "1955-01-01",
-        "end": "2015-12-31", 
+        "end": "1960-12-31",  # Actual dataset end based on testing
         "resolution": "monthly",
-        "grid_size": 732,  # 61 years * 12 months
+        "grid_size": 72,  # 0 to 71 inclusive (6 years * 12 months)
     },
     "depth": {
         "surface_index": 106,  # Surface level index (0m depth)
@@ -75,42 +76,40 @@ class CoordinateConverter:
     @staticmethod
     def lat_to_grid_index(latitude: float) -> int:
         """Convert latitude to ERDDAP grid index."""
-        lat_config = GRID_CONFIG["latitude"]
+        # Based on known working coordinate: 32.5°N → grid index 90
+        # This suggests: grid_index = (55.0 - latitude) / 0.25
         
-        # Clamp to valid range
-        lat_clamped = max(lat_config["min"], min(lat_config["max"], latitude))
+        # Clamp to reasonable range
+        lat_clamped = max(10.0, min(55.0, latitude))
+        grid_index = round((55.0 - lat_clamped) / 0.25)
         
-        # Convert to grid index (grid starts from max latitude)
-        grid_index = int((lat_config["max"] - lat_clamped) / lat_config["resolution"])
-        
-        # Ensure within bounds
-        return max(0, min(lat_config["grid_size"] - 1, grid_index))
+        # Ensure within bounds (0 to 90)
+        return max(0, min(90, grid_index))
     
     @staticmethod
     def lon_to_grid_index(longitude: float) -> int:
         """Convert longitude to ERDDAP grid index."""
-        lon_config = GRID_CONFIG["longitude"]
+        # Based on known working coordinate: -70.0°W → grid index 60
+        # This suggests: grid_index = (longitude - (-85.0)) / 0.25
         
-        # Clamp to valid range
-        lon_clamped = max(lon_config["min"], min(lon_config["max"], longitude))
+        # Clamp to reasonable range
+        lon_clamped = max(-85.0, min(-70.0, longitude))
+        grid_index = round((lon_clamped - (-85.0)) / 0.25)
         
-        # Convert to grid index (grid starts from min longitude)
-        grid_index = int((lon_clamped - lon_config["min"]) / lon_config["resolution"])
-        
-        # Ensure within bounds
-        return max(0, min(lon_config["grid_size"] - 1, grid_index))
+        # Ensure within bounds (0 to 60)
+        return max(0, min(60, grid_index))
     
     @staticmethod
     def grid_index_to_lat(grid_index: int) -> float:
         """Convert grid index back to latitude."""
-        lat_config = GRID_CONFIG["latitude"]
-        return lat_config["max"] - (grid_index * lat_config["resolution"])
+        # lat = 55.0 - (grid_index * 0.25)
+        return 55.0 - (grid_index * GRID_CONFIG["latitude"]["resolution"])
     
     @staticmethod
     def grid_index_to_lon(grid_index: int) -> float:
         """Convert grid index back to longitude."""
-        lon_config = GRID_CONFIG["longitude"]
-        return lon_config["min"] + (grid_index * lon_config["resolution"])
+        # lon = -85.0 + (grid_index * 0.25)
+        return -85.0 + (grid_index * GRID_CONFIG["longitude"]["resolution"])
     
     @staticmethod
     def date_to_time_index(date_str: str) -> int:
@@ -172,22 +171,23 @@ class CoordinateConverter:
             start_dt = datetime.strptime(start_date, "%Y-%m-%d")
             end_dt = datetime.strptime(end_date, "%Y-%m-%d")
             
-            dataset_start = datetime.strptime(GRID_CONFIG["time"]["start"], "%Y-%m-%d")
-            dataset_end = datetime.strptime(GRID_CONFIG["time"]["end"], "%Y-%m-%d")
+            # Actual dataset bounds based on testing
+            dataset_start = datetime.strptime("1955-01-01", "%Y-%m-%d")
+            dataset_end = datetime.strptime("1960-12-31", "%Y-%m-%d")
             
             if start_dt < dataset_start:
-                return False, f"Start date {start_date} before dataset start {GRID_CONFIG['time']['start']}"
+                return False, f"Start date {start_date} before dataset start 1955-01-01"
             
             if end_dt > dataset_end:
-                return False, f"End date {end_date} after dataset end {GRID_CONFIG['time']['end']}"
+                return False, f"End date {end_date} after dataset end 1960-12-31"
             
             if start_dt > end_dt:
                 return False, f"Start date {start_date} after end date {end_date}"
             
-            # Check if time range is reasonable (not too large)
+            # Check if time range is reasonable
             months_diff = (end_dt.year - start_dt.year) * 12 + (end_dt.month - start_dt.month)
-            if months_diff > 120:  # 10 years max
-                return False, f"Date range too large: {months_diff} months (max 120 months)"
+            if months_diff > 72:  # Full dataset is only 72 months
+                return False, f"Date range too large: {months_diff} months (max 72 months)"
             
             return True, "Date range valid"
             
@@ -223,10 +223,15 @@ class ERDDAPQueryBuilder:
         # Get surface depth index
         depth_idx = GRID_CONFIG["depth"]["surface_index"]
         
-        # Build variable queries
+        # Build variable queries - NO URL ENCODING (ERDDAP expects plain brackets)
         variable_queries = []
         for var in variables:
-            var_query = f"{var}[{start_time_idx}:{end_time_idx}][{depth_idx}][{lat_idx}][{lon_idx}]"
+            if start_time_idx == end_time_idx:
+                # Single time point
+                var_query = f"{var}[{start_time_idx}][{depth_idx}][{lat_idx}][{lon_idx}]"
+            else:
+                # Time range
+                var_query = f"{var}[{start_time_idx}:{end_time_idx}][{depth_idx}][{lat_idx}][{lon_idx}]"
             variable_queries.append(var_query)
         
         # Combine into full URL

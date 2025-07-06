@@ -73,8 +73,7 @@ class ERDDAPExtractor:
                 
                 response = self.session.get(
                     url, 
-                    timeout=ERDDAP_CONFIG["timeout"],
-                    stream=True
+                    timeout=ERDDAP_CONFIG["timeout"]
                 )
                 
                 response.raise_for_status()
@@ -145,14 +144,22 @@ class ERDDAPExtractor:
         
         # Build query URL
         query_url = query_builder.build_query_url(latitude, longitude, start_date, end_date, variables)
-        logger.debug(f"🌐 Query URL: {query_url}")
+        logger.info(f"🌐 Query URL: {query_url}")
+        
+        # Log the grid indices for debugging
+        lat_idx = query_builder.converter.lat_to_grid_index(latitude)
+        lon_idx = query_builder.converter.lon_to_grid_index(longitude)
+        start_time_idx = query_builder.converter.date_to_time_index(start_date)
+        end_time_idx = query_builder.converter.date_to_time_index(end_date)
+        logger.info(f"📍 Grid indices: lat={lat_idx}, lon={lon_idx}, time={start_time_idx}:{end_time_idx}")
         
         # Make API request
         try:
             response = self._make_request_with_retry(query_url)
             
-            # Parse response
-            df = pd.read_csv(response.iter_lines(decode_unicode=True), skipinitialspace=True)
+            # Parse response directly (don't stream for small datasets)
+            import io
+            df = pd.read_csv(io.StringIO(response.text), skipinitialspace=True)
             
             # Basic data validation
             if df.empty:
