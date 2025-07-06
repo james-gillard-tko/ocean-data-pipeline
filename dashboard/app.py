@@ -22,9 +22,9 @@ try:
     from cache_manager import cache_manager
     from pipeline.extract import ERDDAPExtractor
     DYNAMIC_API_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     DYNAMIC_API_AVAILABLE = False
-    st.error("⚠️ Dynamic API components not available. Please ensure Phase 1 is integrated.")
+    print(f"Dynamic API components not available: {e}")
 
 # Page configuration
 st.set_page_config(
@@ -61,39 +61,6 @@ st.markdown("""
         margin: 1rem 0;
     }
     
-    .loading-container {
-        text-align: center;
-        padding: 2rem;
-        background: #f8f9fa;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
-    
-    .success-message {
-        color: #2e7d32;
-        font-weight: bold;
-        background: #e8f5e8;
-        padding: 0.5rem;
-        border-radius: 5px;
-        margin: 0.5rem 0;
-    }
-    
-    .error-message {
-        color: #c62828;
-        font-weight: bold;
-        background: #ffebee;
-        padding: 0.5rem;
-        border-radius: 5px;
-        margin: 0.5rem 0;
-    }
-    
-    .sidebar-info {
-        background: #f8f9fa;
-        padding: 1rem;
-        border-radius: 8px;
-        margin: 1rem 0;
-    }
-    
     .coordinate-display {
         background: #fff3cd;
         border: 1px solid #ffeaa7;
@@ -102,6 +69,13 @@ st.markdown("""
         margin: 1rem 0;
         font-family: monospace;
         font-size: 14px;
+    }
+    
+    .sidebar-info {
+        background: #f8f9fa;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -116,7 +90,7 @@ if 'data_metadata' not in st.session_state:
 if 'last_query' not in st.session_state:
     st.session_state.last_query = None
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+@st.cache_data(ttl=300)
 def load_data_from_db():
     """Load data from DuckDB database with caching (backwards compatibility)."""
     db_path = Path("data/ocean_data.duckdb")
@@ -145,7 +119,10 @@ def create_interactive_map(coverage_bounds=None):
     
     # Get dataset coverage bounds
     if coverage_bounds is None and DYNAMIC_API_AVAILABLE:
-        coverage_bounds = get_coverage_bounds()
+        try:
+            coverage_bounds = get_coverage_bounds()
+        except:
+            coverage_bounds = None
     
     # Default bounds if dynamic API not available
     if coverage_bounds is None:
@@ -188,41 +165,26 @@ def create_interactive_map(coverage_bounds=None):
             icon=folium.Icon(color='red', icon='info-sign')
         ).add_to(m)
     
-    # Add grid lines for reference
-    for lat in range(int(coverage_bounds['south']), int(coverage_bounds['north']) + 1, 10):
-        folium.PolyLine(
-            locations=[[lat, coverage_bounds['west']], [lat, coverage_bounds['east']]],
-            color='gray',
-            weight=1,
-            opacity=0.5
-        ).add_to(m)
-    
-    for lon in range(int(coverage_bounds['west']), int(coverage_bounds['east']) + 1, 10):
-        folium.PolyLine(
-            locations=[[coverage_bounds['south'], lon], [coverage_bounds['north'], lon]],
-            color='gray',
-            weight=1,
-            opacity=0.5
-        ).add_to(m)
-    
     return m
 
 def process_map_click(map_data):
     """Process map click events and extract coordinates."""
-    if map_data['last_object_clicked_popup']:
-        # Skip if clicked on popup
+    if not map_data or 'last_clicked' not in map_data:
         return None
-    
+        
     if map_data['last_clicked']:
         lat = map_data['last_clicked']['lat']
         lon = map_data['last_clicked']['lng']
         
         # Validate coordinates are within dataset bounds
         if DYNAMIC_API_AVAILABLE:
-            is_valid, message = coordinate_converter.validate_coordinates(lat, lon)
-            if not is_valid:
-                st.error(f"❌ {message}")
-                return None
+            try:
+                is_valid, message = coordinate_converter.validate_coordinates(lat, lon)
+                if not is_valid:
+                    st.error(f"❌ {message}")
+                    return None
+            except:
+                pass
         
         return (lat, lon)
     
@@ -232,7 +194,7 @@ def fetch_ocean_data(latitude, longitude, start_date, end_date):
     """Fetch ocean data for selected coordinates and date range."""
     
     if not DYNAMIC_API_AVAILABLE:
-        st.error("❌ Dynamic API not available. Please integrate Phase 1 components.")
+        st.error("❌ Dynamic API not available. Please ensure Phase 1 components are properly integrated.")
         return None, None
     
     try:
@@ -244,13 +206,12 @@ def fetch_ocean_data(latitude, longitude, start_date, end_date):
         end_str = end_date.strftime("%Y-%m-%d")
         
         # Fetch data
-        with st.spinner("🌊 Fetching ocean data from ERDDAP..."):
-            df, metadata = extractor.fetch_data_for_location(
-                latitude=latitude,
-                longitude=longitude,
-                start_date=start_str,
-                end_date=end_str
-            )
+        df, metadata = extractor.fetch_data_for_location(
+            latitude=latitude,
+            longitude=longitude,
+            start_date=start_str,
+            end_date=end_str
+        )
         
         return df, metadata
         
@@ -291,24 +252,6 @@ def create_enhanced_time_series_plots(df, metadata=None):
             ),
             row=1, col=1
         )
-        
-        # Add trend line if enough data
-        if len(temp_data) > 2:
-            z = np.polyfit(range(len(temp_data)), temp_data['temperature'], 1)
-            trend_line = np.poly1d(z)(range(len(temp_data)))
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=temp_data['time'],
-                    y=trend_line,
-                    mode='lines',
-                    name='Temperature Trend',
-                    line=dict(color='#ff6b6b', width=2, dash='dash'),
-                    opacity=0.7,
-                    hovertemplate='<b>Temperature Trend</b><br>Date: %{x}<br>Value: %{y:.2f}°C<extra></extra>'
-                ),
-                row=1, col=1
-            )
     
     # Salinity plot
     if 'salinity' in df.columns and df['salinity'].notna().any():
@@ -326,24 +269,6 @@ def create_enhanced_time_series_plots(df, metadata=None):
             ),
             row=2, col=1
         )
-        
-        # Add trend line if enough data
-        if len(sal_data) > 2:
-            z = np.polyfit(range(len(sal_data)), sal_data['salinity'], 1)
-            trend_line = np.poly1d(z)(range(len(sal_data)))
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=sal_data['time'],
-                    y=trend_line,
-                    mode='lines',
-                    name='Salinity Trend',
-                    line=dict(color='#4ecdc4', width=2, dash='dash'),
-                    opacity=0.7,
-                    hovertemplate='<b>Salinity Trend</b><br>Date: %{x}<br>Value: %{y:.2f} PSU<extra></extra>'
-                ),
-                row=2, col=1
-            )
     
     # Update layout
     fig.update_layout(
@@ -395,7 +320,7 @@ def create_data_summary_metrics(df, metadata=None):
             st.markdown('</div>', unsafe_allow_html=True)
     
     with col3:
-        if not df.empty and 'time' in df.columns:
+        if not df.empty and 'time' in df.columns and len(df) > 1:
             time_span = (df['time'].max() - df['time'].min()).days
             st.markdown('<div class="metric-container">', unsafe_allow_html=True)
             st.metric(
@@ -440,11 +365,7 @@ def create_location_selector():
     
     with col1:
         # Create and display interactive map
-        if DYNAMIC_API_AVAILABLE:
-            coverage_bounds = get_coverage_bounds()
-            ocean_map = create_interactive_map(coverage_bounds)
-        else:
-            ocean_map = create_interactive_map()
+        ocean_map = create_interactive_map()
         
         map_data = st_folium(
             ocean_map, 
@@ -510,9 +431,13 @@ def create_date_range_selector():
     
     # Get available date range
     if DYNAMIC_API_AVAILABLE:
-        time_bounds = get_time_bounds()
-        min_date = datetime.strptime(time_bounds['start'], "%Y-%m-%d").date()
-        max_date = datetime.strptime(time_bounds['end'], "%Y-%m-%d").date()
+        try:
+            time_bounds = get_time_bounds()
+            min_date = datetime.strptime(time_bounds['start'], "%Y-%m-%d").date()
+            max_date = datetime.strptime(time_bounds['end'], "%Y-%m-%d").date()
+        except:
+            min_date = date(1955, 1, 1)
+            max_date = date(2015, 12, 31)
     else:
         min_date = date(1955, 1, 1)
         max_date = date(2015, 12, 31)
@@ -583,7 +508,8 @@ def create_data_fetch_interface():
             return
         
         # Fetch new data
-        df, metadata = fetch_ocean_data(lat, lon, start_date, end_date)
+        with st.spinner("🌊 Fetching ocean data from ERDDAP..."):
+            df, metadata = fetch_ocean_data(lat, lon, start_date, end_date)
         
         if df is not None:
             # Store in session state
@@ -592,14 +518,12 @@ def create_data_fetch_interface():
             st.session_state.last_query = current_query
             
             # Show success message
-            data_source = metadata.get('data_source', 'unknown')
+            data_source = metadata.get('data_source', 'unknown') if metadata else 'unknown'
             cache_icon = "💾" if data_source == "cache" else "🌐"
-            st.markdown(f'<div class="success-message">', unsafe_allow_html=True)
-            st.markdown(f"✅ Successfully fetched {len(df)} data points from {data_source} {cache_icon}")
-            st.markdown('</div>', unsafe_allow_html=True)
+            st.success(f"✅ Successfully fetched {len(df)} data points from {data_source} {cache_icon}")
             
             # Show data quality info
-            if 'quality_score' in metadata:
+            if metadata and 'quality_score' in metadata:
                 quality_score = metadata['quality_score']
                 if quality_score < 0.5:
                     st.warning(f"⚠️ Data quality is low ({quality_score:.1%}). Some values may be missing or unreliable.")
@@ -613,30 +537,46 @@ def main():
     # Header
     st.markdown('<h1 class="main-header">🌊 Ocean Data Explorer</h1>', unsafe_allow_html=True)
     
+    # Show dynamic API status
+    if not DYNAMIC_API_AVAILABLE:
+        st.warning("⚠️ Dynamic API features not available. Running in legacy mode.")
+    
     # Sidebar
     with st.sidebar:
         st.markdown('<div class="sidebar-info">', unsafe_allow_html=True)
         st.markdown("### 🎯 Interactive Explorer")
-        st.markdown("""
-        **NEW: Dynamic Data Fetching**
-        - 🗺️ Click anywhere on the map
-        - 📅 Select any date range (1955-2015)
-        - 🌊 Get real-time ocean data
-        - 💾 Smart caching for performance
-        """)
-        st.markdown('</div>', unsafe_allow_html=True)
         
-        # Show cache statistics if available
         if DYNAMIC_API_AVAILABLE:
-            cache_stats = cache_manager.get_cache_stats()
-            st.markdown("### 💾 Cache Status")
-            st.metric("Active Queries", cache_stats['active_entries'])
-            st.metric("Cache Size", f"{cache_stats['total_size_mb']:.1f} MB")
+            st.markdown("""
+            **Dynamic Data Fetching:**
+            - 🗺️ Click anywhere on the map
+            - 📅 Select any date range (1955-2015)
+            - 🌊 Get real-time ocean data
+            - 💾 Smart caching for performance
+            """)
             
-            if st.button("🧹 Clear Cache"):
-                cache_manager.clear_cache()
-                st.success("Cache cleared!")
-                st.rerun()
+            # Show cache statistics
+            try:
+                cache_stats = cache_manager.get_cache_stats()
+                st.markdown("### 💾 Cache Status")
+                st.metric("Active Queries", cache_stats['active_entries'])
+                st.metric("Cache Size", f"{cache_stats['total_size_mb']:.1f} MB")
+                
+                if st.button("🧹 Clear Cache"):
+                    cache_manager.clear_cache()
+                    st.success("Cache cleared!")
+                    st.rerun()
+            except:
+                st.info("Cache system unavailable")
+        else:
+            st.markdown("""
+            **Legacy Mode:**
+            - 📊 View static pipeline data
+            - 🔍 Basic data exploration
+            - 📈 Time series visualization
+            """)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
         
         # Data source info
         st.markdown("---")
@@ -655,110 +595,150 @@ def main():
             st.rerun()
     
     # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "🗺️ Location Selection", 
-        "📈 Time Series Analysis", 
-        "📊 Data Summary", 
-        "🔍 Legacy Data Explorer"
-    ])
-    
-    with tab1:
-        st.header("🗺️ Interactive Location Selection")
+    if DYNAMIC_API_AVAILABLE:
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "🗺️ Location Selection", 
+            "📈 Time Series Analysis", 
+            "📊 Data Summary", 
+            "🔍 Legacy Data Explorer"
+        ])
         
-        # Location selector
-        create_location_selector()
-        
-        # Data fetch interface
-        create_data_fetch_interface()
-        
-        # Show current data summary if available
-        if st.session_state.current_data is not None:
-            st.markdown("---")
-            st.subheader("📊 Current Data Summary")
-            create_data_summary_metrics(
-                st.session_state.current_data, 
-                st.session_state.data_metadata
-            )
-    
-    with tab2:
-        st.header("📈 Time Series Analysis")
-        
-        # Check if we have data
-        if st.session_state.current_data is not None and not st.session_state.current_data.empty:
-            # Create enhanced time series plots
-            fig = create_enhanced_time_series_plots(
-                st.session_state.current_data, 
-                st.session_state.data_metadata
-            )
+        with tab1:
+            st.header("🗺️ Interactive Location Selection")
+            create_location_selector()
+            create_data_fetch_interface()
             
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-            
-            # Show data table
-            st.subheader("📋 Data Table")
-            st.dataframe(st.session_state.current_data, use_container_width=True)
-            
-            # Data export
-            if st.button("📥 Export Data as CSV"):
-                csv_data = st.session_state.current_data.to_csv(index=False)
-                st.download_button(
-                    label="Download CSV",
-                    data=csv_data,
-                    file_name=f"ocean_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
+            # Show current data summary if available
+            if st.session_state.current_data is not None:
+                st.markdown("---")
+                st.subheader("📊 Current Data Summary")
+                create_data_summary_metrics(
+                    st.session_state.current_data, 
+                    st.session_state.data_metadata
                 )
-        else:
-            st.info("📍 Select a location and fetch data to see time series analysis")
-    
-    with tab3:
-        st.header("📊 Data Summary & Quality")
         
-        if st.session_state.current_data is not None and not st.session_state.current_data.empty:
-            # Summary metrics
-            create_data_summary_metrics(
-                st.session_state.current_data, 
-                st.session_state.data_metadata
-            )
+        with tab2:
+            st.header("📈 Time Series Analysis")
             
-            # Statistical summary
-            st.subheader("📈 Statistical Summary")
-            numeric_cols = st.session_state.current_data.select_dtypes(include=[np.number]).columns
-            if len(numeric_cols) > 0:
-                summary_stats = st.session_state.current_data[numeric_cols].describe()
-                st.dataframe(summary_stats.round(3), use_container_width=True)
+            # Check if we have data
+            if st.session_state.current_data is not None and not st.session_state.current_data.empty:
+                # Create enhanced time series plots
+                fig = create_enhanced_time_series_plots(
+                    st.session_state.current_data, 
+                    st.session_state.data_metadata
+                )
+                
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # Show data table
+                st.subheader("📋 Data Table")
+                st.dataframe(st.session_state.current_data, use_container_width=True)
+                
+                # Data export
+                if st.button("📥 Export Data as CSV"):
+                    csv_data = st.session_state.current_data.to_csv(index=False)
+                    st.download_button(
+                        label="Download CSV",
+                        data=csv_data,
+                        file_name=f"ocean_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+            else:
+                st.info("📍 Select a location and fetch data to see time series analysis")
+        
+        with tab3:
+            st.header("📊 Data Summary & Quality")
             
-            # Quality information
-            if st.session_state.data_metadata and 'quality_issues' in st.session_state.data_metadata:
-                st.subheader("🔍 Data Quality Assessment")
-                issues = st.session_state.data_metadata['quality_issues']
-                if issues:
-                    for issue in issues:
-                        st.warning(f"⚠️ {issue}")
-                else:
-                    st.success("✅ No data quality issues detected")
+            if st.session_state.current_data is not None and not st.session_state.current_data.empty:
+                # Summary metrics
+                create_data_summary_metrics(
+                    st.session_state.current_data, 
+                    st.session_state.data_metadata
+                )
+                
+                # Statistical summary
+                st.subheader("📈 Statistical Summary")
+                numeric_cols = st.session_state.current_data.select_dtypes(include=[np.number]).columns
+                if len(numeric_cols) > 0:
+                    summary_stats = st.session_state.current_data[numeric_cols].describe()
+                    st.dataframe(summary_stats.round(3), use_container_width=True)
+                
+                # Quality information
+                if st.session_state.data_metadata and 'quality_issues' in st.session_state.data_metadata:
+                    st.subheader("🔍 Data Quality Assessment")
+                    issues = st.session_state.data_metadata['quality_issues']
+                    if issues:
+                        for issue in issues:
+                            st.warning(f"⚠️ {issue}")
+                    else:
+                        st.success("✅ No data quality issues detected")
+                
+            else:
+                st.info("📍 Select a location and fetch data to see summary statistics")
+        
+        with tab4:
+            st.header("🔍 Legacy Data Explorer")
+            st.info("This tab shows data from the original pipeline for comparison")
             
-        else:
-            st.info("📍 Select a location and fetch data to see summary statistics")
+            # Load legacy data
+            df_legacy, row_count, table_info = load_data_from_db()
+            
+            if not df_legacy.empty:
+                st.subheader("📊 Legacy Data Summary")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Total Records", row_count)
+                with col2:
+                    st.metric("Columns", len(df_legacy.columns))
+                with col3:
+                    if 'time' in df_legacy.columns and len(df_legacy) > 1:
+                        time_span = (df_legacy['time'].max() - df_legacy['time'].min()).days
+                        st.metric("Time Span", f"{time_span} days")
+                
+                st.dataframe(df_legacy, use_container_width=True)
+            else:
+                st.warning("⚠️ No legacy data found. Run the pipeline first: `python run_pipeline.py`")
     
-    with tab4:
-        st.header("🔍 Legacy Data Explorer")
-        st.info("This tab shows data from the original pipeline for comparison")
+    else:
+        # Legacy mode - simplified interface
+        st.header("🔍 Ocean Data Explorer (Legacy Mode)")
         
         # Load legacy data
         df_legacy, row_count, table_info = load_data_from_db()
         
         if not df_legacy.empty:
-            st.subheader("📊 Legacy Data Summary")
-            col1, col2, col3 = st.columns(3)
+            # Create basic time series plots
+            fig = create_enhanced_time_series_plots(df_legacy)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
             
-            with col1:
-                st.metric("Total Records", row_count)
-            with col2:
-                st.metric("Columns", len(df_legacy.columns))
-            with col3:
-                if 'time' in df_legacy.columns:
-                    time_span = (df_legacy['time'].max() - df_legacy['time'].min()).days
-                    st.metric("Time Span", f"{time_span} days")
+            # Show data summary
+            create_data_summary_metrics(df_legacy)
             
+            # Show data table
+            st.subheader("📋 Data Table")
             st.dataframe(df_legacy, use_container_width=True)
         else:
+            st.warning("⚠️ No data found. Run the pipeline first: `python run_pipeline.py`")
+    
+    # Footer
+    st.markdown("---")
+    
+    if DYNAMIC_API_AVAILABLE and st.session_state.current_data is not None:
+        data_info = f"Dynamic data: {len(st.session_state.current_data)} points"
+        if st.session_state.data_metadata:
+            source = st.session_state.data_metadata.get('data_source', 'unknown')
+            data_info += f" from {source}"
+    else:
+        data_info = "Legacy mode active" if not DYNAMIC_API_AVAILABLE else "No dynamic data loaded"
+    
+    st.markdown(
+        f"**🌊 Ocean Data Explorer** | "
+        f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | "
+        f"{data_info}"
+    )
+
+if __name__ == "__main__":
+    main()
