@@ -535,7 +535,7 @@ def main():
     """Main dashboard application."""
     
     # Header
-    st.markdown('<h1 class="main-header">🌊 Ocean Data Explorer</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">Ocean Data Explorer - Global SST & Salinity</h1>', unsafe_allow_html=True)
     
     # Show dynamic API status
     if not DYNAMIC_API_AVAILABLE:
@@ -649,6 +649,27 @@ def main():
         
         with tab3:
             st.header("📊 Data Summary & Quality")
+            
+            # Show cache statistics if available
+            if DYNAMIC_API_AVAILABLE:
+                try:
+                    cache_stats = cache_manager.get_cache_stats()
+                    st.subheader("💾 Cache Status")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Active Queries", cache_stats['active_entries'])
+                    with col2:
+                        st.metric("Cache Size", f"{cache_stats['total_size_mb']:.1f} MB")
+                    with col3:
+                        if st.button("🧹 Clear Cache", key="clear_cache_tab"):
+                            cache_manager.clear_cache()
+                            st.success("Cache cleared!")
+                            st.rerun()
+                    
+                    st.markdown("---")
+                except:
+                    st.info("Cache system unavailable")
             
             if st.session_state.current_data is not None and not st.session_state.current_data.empty:
                 # Summary metrics
