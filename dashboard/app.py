@@ -355,182 +355,6 @@ def create_data_summary_metrics(df, metadata=None):
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
-def create_location_selector():
-    """Create the enhanced location selection interface."""
-    
-    st.subheader("🗺️ Select Ocean Location")
-    
-    # Create columns for map and controls
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        # Create and display interactive map
-        ocean_map = create_interactive_map()
-        
-        map_data = st_folium(
-            ocean_map, 
-            width=700, 
-            height=400,
-            returned_objects=['last_clicked', 'last_object_clicked_popup']
-        )
-        
-        # Process map clicks
-        clicked_coords = process_map_click(map_data)
-        if clicked_coords:
-            st.session_state.selected_coordinates = clicked_coords
-            st.rerun()
-    
-    with col2:
-        st.markdown("### 🎯 Selection Controls")
-        
-        # Display current selection
-        if st.session_state.selected_coordinates:
-            lat, lon = st.session_state.selected_coordinates
-            st.markdown(f'<div class="coordinate-display">', unsafe_allow_html=True)
-            st.markdown(f"**Selected Location:**<br>")
-            st.markdown(f"Latitude: {lat:.3f}°N<br>")
-            st.markdown(f"Longitude: {lon:.3f}°W")
-            st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.info("👆 Click on the map to select a location")
-        
-        # Manual coordinate entry
-        st.markdown("**Or enter coordinates manually:**")
-        manual_lat = st.number_input(
-            "Latitude (°N)", 
-            min_value=20.0, 
-            max_value=80.0, 
-            value=40.0, 
-            step=0.1,
-            help="Latitude in decimal degrees (20°N - 80°N)"
-        )
-        manual_lon = st.number_input(
-            "Longitude (°W)", 
-            min_value=-80.0, 
-            max_value=40.0, 
-            value=-30.0, 
-            step=0.1,
-            help="Longitude in decimal degrees (80°W - 40°E)"
-        )
-        
-        if st.button("📍 Use Manual Coordinates"):
-            st.session_state.selected_coordinates = (manual_lat, manual_lon)
-            st.rerun()
-        
-        # Clear selection
-        if st.button("🗑️ Clear Selection"):
-            st.session_state.selected_coordinates = None
-            st.session_state.current_data = None
-            st.session_state.data_metadata = None
-            st.rerun()
-
-def create_date_range_selector():
-    """Create date range selection interface."""
-    
-    st.subheader("📅 Select Date Range")
-    
-    # Get available date range
-    if DYNAMIC_API_AVAILABLE:
-        try:
-            # Use actual dataset bounds: 1955-1960
-            min_date = date(1955, 1, 1)
-            max_date = date(1960, 12, 31)
-        except:
-            min_date = date(1955, 1, 1)
-            max_date = date(1960, 12, 31)
-    else:
-        min_date = date(1955, 1, 1)
-        max_date = date(1960, 12, 31)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        start_date = st.date_input(
-            "Start Date",
-            value=date(1955, 1, 1),
-            min_value=min_date,
-            max_value=max_date,
-            help=f"Select start date (1955-01-01 to 1960-12-31)"
-        )
-    
-    with col2:
-        end_date = st.date_input(
-            "End Date",
-            value=date(1960, 12, 31),
-            min_value=min_date,
-            max_value=max_date,
-            help=f"Select end date (1955-01-01 to 1960-12-31)"
-        )
-    
-    # Validate date range
-    if start_date > end_date:
-        st.error("❌ Start date must be before end date")
-        return None, None
-    
-    # Check if date range is reasonable
-    days_diff = (end_date - start_date).days
-    if days_diff > 2190:  # ~6 years (full dataset)
-        st.warning(f"⚠️ Large date range ({days_diff} days). Dataset only covers 1955-1960.")
-    
-    return start_date, end_date
-
-def create_data_fetch_interface():
-    """Create the data fetching interface."""
-    
-    st.subheader("🚀 Fetch Ocean Data")
-    
-    # Check if we have valid selections
-    if not st.session_state.selected_coordinates:
-        st.warning("⚠️ Please select a location on the map first")
-        return
-    
-    # Get date range
-    start_date, end_date = create_date_range_selector()
-    
-    if start_date is None or end_date is None:
-        return
-    
-    # Display current selections
-    lat, lon = st.session_state.selected_coordinates
-    st.markdown('<div class="selection-box">', unsafe_allow_html=True)
-    st.markdown(f"**📍 Location:** {lat:.3f}°N, {lon:.3f}°W")
-    st.markdown(f"**📅 Date Range:** {start_date} to {end_date}")
-    st.markdown(f"**📊 Expected Duration:** {(end_date - start_date).days} days")
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Fetch data button
-    if st.button("🌊 Fetch Ocean Data", type="primary"):
-        
-        # Check if this is the same query as last time
-        current_query = (lat, lon, start_date, end_date)
-        if st.session_state.last_query == current_query and st.session_state.current_data is not None:
-            st.success("✅ Using cached data from previous query")
-            return
-        
-        # Fetch new data
-        with st.spinner("🌊 Fetching ocean data from ERDDAP..."):
-            df, metadata = fetch_ocean_data(lat, lon, start_date, end_date)
-        
-        if df is not None:
-            # Store in session state
-            st.session_state.current_data = df
-            st.session_state.data_metadata = metadata
-            st.session_state.last_query = current_query
-            
-            # Show success message
-            data_source = metadata.get('data_source', 'unknown') if metadata else 'unknown'
-            cache_icon = "💾" if data_source == "cache" else "🌐"
-            st.success(f"✅ Successfully fetched {len(df)} data points from {data_source} {cache_icon}")
-            
-            # Show data quality info
-            if metadata and 'quality_score' in metadata:
-                quality_score = metadata['quality_score']
-                if quality_score < 0.5:
-                    st.warning(f"⚠️ Data quality is low ({quality_score:.1%}). Some values may be missing or unreliable.")
-            
-            # Trigger rerun to update visualizations
-            st.rerun()
-
 def main():
     """Main dashboard application."""
     
@@ -544,30 +368,15 @@ def main():
     # Sidebar
     with st.sidebar:
         st.markdown('<div class="sidebar-info">', unsafe_allow_html=True)
-        st.markdown("### 🎯 Interactive Explorer")
-        
+        st.markdown("### 🎯 How to Use")
         if DYNAMIC_API_AVAILABLE:
             st.markdown("""
-            **Dynamic Data Fetching:**
-            - 🗺️ Click anywhere on the map
-            - 📅 Select any date range (1955-2015)
-            - 🌊 Get real-time ocean data
-            - 💾 Smart caching for performance
+            **Step-by-step guide:**
+            1. 🗺️ Click anywhere on the map to select location
+            2. 📅 Choose your date range (1955-1960)
+            3. 🌊 Click "Fetch Ocean Data"
+            4. 📈 View results in analysis tabs
             """)
-            
-            # Show cache statistics
-            try:
-                cache_stats = cache_manager.get_cache_stats()
-                st.markdown("### 💾 Cache Status")
-                st.metric("Active Queries", cache_stats['active_entries'])
-                st.metric("Cache Size", f"{cache_stats['total_size_mb']:.1f} MB")
-                
-                if st.button("🧹 Clear Cache"):
-                    cache_manager.clear_cache()
-                    st.success("Cache cleared!")
-                    st.rerun()
-            except:
-                st.info("Cache system unavailable")
         else:
             st.markdown("""
             **Legacy Mode:**
@@ -597,25 +406,179 @@ def main():
     # Main content tabs
     if DYNAMIC_API_AVAILABLE:
         tab1, tab2, tab3, tab4 = st.tabs([
-            "🗺️ Location Selection", 
+            "🗺️ Location & Data", 
             "📈 Time Series Analysis", 
             "📊 Data Summary", 
             "🔍 Legacy Data Explorer"
         ])
         
         with tab1:
-            st.header("🗺️ Interactive Location Selection")
-            create_location_selector()
-            create_data_fetch_interface()
+            # Create columns for map and controls
+            col1, col2 = st.columns([3, 1])
             
-            # Show current data summary if available
-            if st.session_state.current_data is not None:
-                st.markdown("---")
-                st.subheader("📊 Current Data Summary")
-                create_data_summary_metrics(
-                    st.session_state.current_data, 
-                    st.session_state.data_metadata
+            with col1:
+                st.subheader("🗺️ Select Ocean Location")
+                # Create and display interactive map
+                ocean_map = create_interactive_map()
+                
+                map_data = st_folium(
+                    ocean_map, 
+                    width=700, 
+                    height=400,
+                    returned_objects=['last_clicked', 'last_object_clicked_popup']
                 )
+                
+                # Process map clicks
+                clicked_coords = process_map_click(map_data)
+                if clicked_coords:
+                    st.session_state.selected_coordinates = clicked_coords
+                    st.rerun()
+            
+            with col2:
+                st.markdown("### 🎯 Selection Controls")
+                
+                # Display current selection
+                if st.session_state.selected_coordinates:
+                    lat, lon = st.session_state.selected_coordinates
+                    st.markdown(f'<div class="coordinate-display">', unsafe_allow_html=True)
+                    st.markdown(f"**Selected Location:**<br>")
+                    st.markdown(f"Latitude: {lat:.3f}°N<br>")
+                    st.markdown(f"Longitude: {lon:.3f}°W")
+                    st.markdown('</div>', unsafe_allow_html=True)
+                else:
+                    st.info("👆 Click on the map to select a location")
+                
+                # Manual coordinate entry in expander
+                with st.expander("📍 Manual Coordinates", expanded=False):
+                    manual_lat = st.number_input(
+                        "Latitude (°N)", 
+                        min_value=20.0, 
+                        max_value=80.0, 
+                        value=40.0, 
+                        step=0.1,
+                        help="Latitude in decimal degrees (20°N - 80°N)"
+                    )
+                    manual_lon = st.number_input(
+                        "Longitude (°W)", 
+                        min_value=-80.0, 
+                        max_value=40.0, 
+                        value=-30.0, 
+                        step=0.1,
+                        help="Longitude in decimal degrees (80°W - 40°E)"
+                    )
+                    
+                    if st.button("📍 Use Manual Coordinates", use_container_width=True):
+                        st.session_state.selected_coordinates = (manual_lat, manual_lon)
+                        st.rerun()
+                
+                # Date range selection
+                st.markdown("### 📅 Select Date Range")
+                
+                # Get available date range
+                min_date = date(1955, 1, 1)
+                max_date = date(1960, 12, 31)
+                
+                start_date = st.date_input(
+                    "Start Date",
+                    value=date(1955, 1, 1),
+                    min_value=min_date,
+                    max_value=max_date,
+                    help="Select start date (1955-01-01 to 1960-12-31)"
+                )
+                
+                end_date = st.date_input(
+                    "End Date",
+                    value=date(1960, 12, 31),
+                    min_value=min_date,
+                    max_value=max_date,
+                    help="Select end date (1955-01-01 to 1960-12-31)"
+                )
+                
+                # Validate date range
+                if start_date > end_date:
+                    st.error("❌ Start date must be before end date")
+                    date_range_valid = False
+                else:
+                    date_range_valid = True
+                    # Check if date range is reasonable
+                    days_diff = (end_date - start_date).days
+                    if days_diff > 2190:  # ~6 years (full dataset)
+                        st.warning(f"⚠️ Large date range ({days_diff} days)")
+                
+                # Query summary
+                if st.session_state.selected_coordinates and date_range_valid:
+                    lat, lon = st.session_state.selected_coordinates
+                    st.markdown('<div class="selection-box">', unsafe_allow_html=True)
+                    st.markdown(f"**📍 Location:** {lat:.3f}°N, {lon:.3f}°W")
+                    st.markdown(f"**📅 Date Range:** {start_date} to {end_date}")
+                    st.markdown(f"**📊 Duration:** {(end_date - start_date).days} days")
+                    st.markdown('</div>', unsafe_allow_html=True)
+                
+                # Fetch data button
+                fetch_disabled = not (st.session_state.selected_coordinates and date_range_valid)
+                
+                if st.button("🌊 Fetch Ocean Data", type="primary", use_container_width=True, disabled=fetch_disabled):
+                    if not st.session_state.selected_coordinates:
+                        st.warning("⚠️ Please select a location on the map first")
+                    elif not date_range_valid:
+                        st.warning("⚠️ Please fix the date range")
+                    else:
+                        # Check if this is the same query as last time
+                        lat, lon = st.session_state.selected_coordinates
+                        current_query = (lat, lon, start_date, end_date)
+                        if st.session_state.last_query == current_query and st.session_state.current_data is not None:
+                            st.success("✅ Using cached data from previous query")
+                        else:
+                            # Fetch new data
+                            with st.spinner("🌊 Fetching ocean data from ERDDAP..."):
+                                df, metadata = fetch_ocean_data(lat, lon, start_date, end_date)
+                            
+                            if df is not None:
+                                # Store in session state
+                                st.session_state.current_data = df
+                                st.session_state.data_metadata = metadata
+                                st.session_state.last_query = current_query
+                                
+                                # Show success message
+                                data_source = metadata.get('data_source', 'unknown') if metadata else 'unknown'
+                                cache_icon = "💾" if data_source == "cache" else "🌐"
+                                st.success(f"✅ Successfully fetched {len(df)} data points from {data_source} {cache_icon}")
+                                
+                                # Show data quality info
+                                if metadata and 'quality_score' in metadata:
+                                    quality_score = metadata['quality_score']
+                                    if quality_score < 0.5:
+                                        st.warning(f"⚠️ Data quality is low ({quality_score:.1%}). Some values may be missing or unreliable.")
+                                
+                                # Trigger rerun to update visualizations
+                                st.rerun()
+                
+                # Clear selection button
+                if st.button("🗑️ Clear Selection", use_container_width=True):
+                    st.session_state.selected_coordinates = None
+                    st.session_state.current_data = None
+                    st.session_state.data_metadata = None
+                    st.rerun()
+            
+            # Show data preview if available
+            if st.session_state.current_data is not None and not st.session_state.current_data.empty:
+                st.markdown("---")
+                st.subheader("📊 Data Preview")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Data Points", f"{len(st.session_state.current_data):,}")
+                with col2:
+                    data_source = st.session_state.data_metadata.get('data_source', 'unknown') if st.session_state.data_metadata else 'unknown'
+                    source_icon = "💾" if data_source == "cache" else "🌐"
+                    st.metric(f"{source_icon} Source", data_source.title())
+                with col3:
+                    if st.session_state.data_metadata and 'quality_score' in st.session_state.data_metadata:
+                        quality_score = st.session_state.data_metadata['quality_score']
+                        quality_color = "🟢" if quality_score > 0.8 else "🟡" if quality_score > 0.5 else "🔴"
+                        st.metric(f"{quality_color} Quality", f"{quality_score:.1%}")
+                
+                st.info("📈 Go to 'Time Series Analysis' tab to view detailed charts and data")
         
         with tab2:
             st.header("📈 Time Series Analysis")
@@ -650,28 +613,42 @@ def main():
         with tab3:
             st.header("📊 Data Summary & Quality")
             
-            # Show cache statistics if available
+            # Cache Status (moved from sidebar)
             if DYNAMIC_API_AVAILABLE:
+                st.subheader("💾 Cache Status")
                 try:
                     cache_stats = cache_manager.get_cache_stats()
-                    st.subheader("💾 Cache Status")
+                    col1, col2, col3, col4 = st.columns(4)
                     
-                    col1, col2, col3 = st.columns(3)
                     with col1:
                         st.metric("Active Queries", cache_stats['active_entries'])
                     with col2:
                         st.metric("Cache Size", f"{cache_stats['total_size_mb']:.1f} MB")
                     with col3:
-                        if st.button("🧹 Clear Cache", key="clear_cache_tab"):
+                        st.metric("TTL Hours", cache_stats['ttl_hours'])
+                    with col4:
+                        cache_enabled = "✅ On" if cache_stats['cache_enabled'] else "❌ Off"
+                        st.metric("Cache Status", cache_enabled)
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("🧹 Clear Cache"):
                             cache_manager.clear_cache()
                             st.success("Cache cleared!")
                             st.rerun()
-                    
-                    st.markdown("---")
+                    with col2:
+                        if st.button("🔄 Refresh Cache Stats"):
+                            st.rerun()
+                            
                 except:
                     st.info("Cache system unavailable")
+                
+                st.markdown("---")
             
+            # Current Data Summary (moved from landing page)
             if st.session_state.current_data is not None and not st.session_state.current_data.empty:
+                st.subheader("📊 Current Data Summary")
+                
                 # Summary metrics
                 create_data_summary_metrics(
                     st.session_state.current_data, 
@@ -756,7 +733,7 @@ def main():
         data_info = "Legacy mode active" if not DYNAMIC_API_AVAILABLE else "No dynamic data loaded"
     
     st.markdown(
-        f"**🌊 Ocean Data Explorer** | "
+        f"**Ocean Data Explorer** | "
         f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | "
         f"{data_info}"
     )
